@@ -1,0 +1,582 @@
+from tkinter import LEFT, X, NORMAL, DISABLED, Frame, Button, Label, Entry, Text, StringVar, END, DoubleVar, Spinbox
+import tkinter
+import webbrowser
+from tkinter import font, ttk, messagebox
+from PIL import Image, ImageTk
+from src.backend.member import Member
+from src.label.creator import FIRE_BOX_STORAGE_LENGTH, TEMP_STORAGE_LENGTH
+from src.util.logger import get_logger
+import config
+from typing import Any, Callable, Union
+from datetime import datetime, timedelta
+from .event import GuiEvent, MemberLoginData
+from src.backend import label_data
+
+MAX_DESCRIPTION_LENGTH = 256
+ALLOWED_DRYING_FROM = 0
+ALLOWED_DRYING_TO = 72
+ALLOWED_DRYING_INCREMENT = 4
+MS_PER_SECOND = 1000
+TIMEOUT_TIMER_PERIOD_MS = 60 * MS_PER_SECOND
+TEMPORARY_STORAGE_LABEL_DEFAULT_TEXT = 'Describe what you want to store here...'
+
+WEBSITE_ICON_PATH = "resources/website.png"
+FORMS_ICON_PATH   = "resources/forms.png"
+WIKI_ICON_PATH    = "resources/wiki.png"
+DISCORD_ICON_PATH = "resources/discord.png"
+
+logger = get_logger()
+
+
+class GuiTemplate:
+
+    def add_print_button(self, master: tkinter.Frame, label: str, callback: Callable[[], Any], takefocus: bool = True) -> Button:
+        button = Button(master, text=label, font=self.label_font, command=callback, takefocus=takefocus)
+        button.pack(fill=X, pady=5)
+        return button
+
+    def show_error_message(self, error_message: str, error_title: str = 'Error') -> None:
+        logger.error(f"GUI error: {error_message}")
+        messagebox.showwarning(error_title, error_message)
+
+    def create_label(self, master: tkinter.Frame, text: str) -> Label:
+        return Label(master, text=text, anchor='w', bg='white', font=self.label_font)
+
+    def create_entry(self, master: tkinter.Frame, text: str = '', border: bool = True) -> Entry:
+
+        entry = Entry(master, bg='white', font=self.text_font, disabledbackground='white', disabledforeground='black',
+                      cursor='arrow', borderwidth=1 if border else 0, highlightthickness=1 if border else 0)
+        entry.insert(END, text)
+        entry.config(state=DISABLED)
+        return entry
+
+    def create_label_with_status_indicator(self, master, label_text, dt: Union[datetime, None]):
+
+        holder = Frame(master, background='')
+
+        label = self.create_label(master, label_text)
+        label.pack(fill=X, pady=5)
+
+        expiration_text = str(dt)
+        if dt is None:
+            text = "?"
+            color = "red"
+            expiration_text = "Unknown"
+        elif datetime.now() > dt:
+            text = 'X'
+            color = "red"
+        else:
+            text = "✓"
+            color = "green"
+
+        status_label = self.create_label(holder, text)
+        status_label.configure(fg=color)
+        status_label.pack(side=LEFT, padx=5)
+
+        tag_expiration_text = self.create_entry(holder, expiration_text, border=False)
+        tag_expiration_text.pack(fill=X)
+
+        return holder
+
+    def add_basic_information(self, master: tkinter.Frame, member_number: int, name: str):
+
+        member_id_label = self.create_label(master, 'Member ID:')
+        member_id_label.pack(fill=X, pady=5)
+
+        member_id_text = self.create_entry(master, str(member_number), border=False)
+        member_id_text.pack(fill=X)
+
+        name_label = self.create_label(master, 'Name:')
+        name_label.pack(fill=X, pady=5)
+
+        name_id_text = self.create_entry(master, name, border=False)
+        name_id_text.pack(fill=X)
+
+    def __init__(self, master: tkinter.Tk, gui_callback: Callable[[GuiEvent], None]):
+
+        self.master = master
+        self.gui_callback = gui_callback
+        self.timer: str | None = None
+        self.timeout_timer_start()
+
+        for widget in self.master.winfo_children():
+            widget.destroy()
+
+        self.label_font = font.Font(family='Arial', size=25, weight='bold')
+        self.text_font = font.Font(family='Arial', size=25)
+
+        self.logotype_img = Image.open(config.LOGOTYPE_PATH)
+        self.window_width, self.window_height = self.master.winfo_screenwidth(), self.master.winfo_screenheight()
+
+        # Cap logo to at most 150px tall so it doesn't crowd out content
+        MAX_LOGO_HEIGHT = 150
+        lw, lh = self.logotype_img.size
+        if lh > MAX_LOGO_HEIGHT:
+            scale = MAX_LOGO_HEIGHT / lh
+            self.logotype_img = self.logotype_img.resize(
+                (int(lw * scale), MAX_LOGO_HEIGHT), Image.LANCZOS)
+
+        if config.development:
+            dev_title = Label(self.master, text="Development mode", font=self.label_font)
+            dev_title.pack(pady=10)
+        else:
+            self.logotype = ImageTk.PhotoImage(self.logotype_img)
+            self.logotype_label = Label(self.master, image=self.logotype, bd=0)
+            self.logotype_label.pack(pady=10)
+            # ---------- Quick access icons ----------
+            links_frame = Frame(self.master, bg="white")
+            links_frame.pack(pady=(0, 10))
+
+            ICON_SIZE = 48
+
+            def make_icon_button(image_path, text, url):
+                holder = Frame(links_frame, bg="white")
+
+                img = Image.open(image_path).resize((56, 56), Image.LANCZOS)
+                photo = ImageTk.PhotoImage(img)
+
+                btn = Button(
+                    holder,
+                    image=photo,
+                    bd=0,
+                    relief="flat",
+                    bg="white",
+                    activebackground="white",
+                    cursor="hand2",
+                    command=lambda: webbrowser.open(url)
+                )
+                btn.image = photo
+                btn.pack()
+
+                Label(
+                    holder,
+                    text=text,
+                    bg="white",
+                    font=("Arial", 10, "bold")
+                ).pack(pady=(2, 0))
+
+                holder.pack(side=LEFT, padx=12)
+    
+            make_icon_button(config.WEBSITE_ICON_PATH, "Website","https://www.kalmarmakerspace.se/")
+
+            make_icon_button(config.FORMS_ICON_PATH, "Forms","https://docs.google.com/forms/u/0/")
+
+            make_icon_button(config.WIKI_ICON_PATH, "Wiki","https://wiki.kalmarmakerspace.se/login")
+
+            make_icon_button(config.DISCORD_ICON_PATH, "Discord","https://discord.com/")
+            # ---------------------------------------
+
+        frame_width = max(self.logotype_img.size[0], 500)
+
+        # Scrollable canvas so all buttons are reachable on small screens
+        self.canvas = tkinter.Canvas(self.master, bg='white', bd=0, highlightthickness=0,
+                                     width=frame_width,
+                                     height=self.window_height - MAX_LOGO_HEIGHT - 40)
+        self.scrollbar = tkinter.Scrollbar(self.master, orient='vertical', command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.scrollbar.pack(side=tkinter.RIGHT, fill=tkinter.Y)
+        self.canvas.pack()
+
+        self.frame = Frame(self.canvas, bg='white', bd=0, width=frame_width)
+        self.frame_window = self.canvas.create_window((0, 0), window=self.frame, anchor='nw')
+
+        def _on_frame_configure(e):
+            self.canvas.configure(scrollregion=self.canvas.bbox('all'))
+
+        def _on_canvas_configure(e):
+            self.canvas.itemconfig(self.frame_window, width=e.width)
+
+        self.frame.bind('<Configure>', _on_frame_configure)
+        self.canvas.bind('<Configure>', _on_canvas_configure)
+        # Mouse wheel scrolling (Windows/Mac and Linux)
+        self.master.bind('<MouseWheel>', lambda e: self.canvas.yview_scroll(int(-1*(e.delta/120)), 'units'))
+        self.master.bind('<Button-4>', lambda e: self.canvas.yview_scroll(-1, 'units'))
+        self.master.bind('<Button-5>', lambda e: self.canvas.yview_scroll(1, 'units'))
+
+    def timeout_timer_reset(self) -> None:
+
+        if config.development:
+            logger.info('Timeout timer was reset')
+
+        assert self.timer is not None
+        self.master.after_cancel(self.timer)
+        self.timeout_timer_start()
+
+    def timeout_timer_cancel(self) -> None:
+        assert self.timer is not None
+        self.master.after_cancel(self.timer)
+
+    def timeout_timer_start(self) -> None:
+        self.timer = self.master.after(TIMEOUT_TIMER_PERIOD_MS, self.timeout_timer_expired)
+
+    def timeout_timer_expired(self) -> None:
+        self.master.after_idle(lambda: self.gui_callback(GuiEvent(GuiEvent.TIMEOUT_TIMER_EXPIRED)))
+        self.timeout_timer_start()
+
+
+class StartGui(GuiTemplate):
+
+    def _is_login_entry_complete(self) -> None:
+        if len(self.username_entry.get()) > 0:
+            self.login_button.config(state='normal')
+        else:
+            self.login_button.config(state='disabled')
+
+    def __init__(self, master: tkinter.Tk, gui_callback: Callable[[GuiEvent], None]):
+        super().__init__(master, gui_callback)
+
+        self.entry_debouncer: str | None = None
+
+        self.username_entry_label = self.create_label(self.frame, 'Username:')
+        self.username_entry_label.pack(fill=X, pady=5)
+
+        self.username_entry = self.create_entry(self.frame, '')
+        self.username_entry.config(state=NORMAL)
+        self.username_entry.pack(fill=X, pady=5)
+        self.username_entry.focus_force()
+        self.username_entry.bind("<KeyRelease>", self.keyup)
+
+        self.password_entry_label = self.create_label(self.frame, 'Password:')
+        self.password_entry_label.pack(fill=X, pady=5)
+
+        self.password_entry = self.create_entry(self.frame, '')
+        self.password_entry.config(state=NORMAL, show='*')
+        self.password_entry.pack(fill=X, pady=5)
+        self.password_entry.bind("<KeyRelease>", self.keyup)
+
+        #def login(*args):
+        #    return gui_callback(GuiEvent(GuiEvent.LOGIN, MemberLoginData(self.username_entry.get(), self.password_entry.get())))
+
+        def login(*args):
+            try:
+                username = self.username_entry.get()
+                password = self.password_entry.get()
+            except tkinter.TclError:
+                return  # widget destroyed, ignore
+
+            self.timeout_timer_cancel()  # stop the timer while login is in progress
+            return gui_callback(GuiEvent(GuiEvent.LOGIN, MemberLoginData(username, password)))
+
+
+        self.login_button = self.add_print_button(
+            self.frame,
+            'Login',
+            login
+        )
+        self.login_button.config(state='disabled')
+
+        self.master.bind("<KP_Enter>", login)
+        self.master.bind("<Return>", login)
+
+        self.help_label = self.create_label(self.frame, 'Log in with your username (email) and password.\nYou can manage your account at https://medlem.kalmarmakerspace.se.')
+        self.help_label.config(fg='grey', font=("Arial", 12))
+        self.help_label.pack(fill=X, pady=5)
+
+        self.progress_value = DoubleVar()
+        self.progress_bar = ttk.Progressbar(self.frame, variable=self.progress_value, mode='determinate', maximum=100)
+
+        self.error_message_debouncer: str | None = None
+        self.error_message_label = self.create_label(self.frame, '')
+        self.error_message_label.config(fg='red')
+        self.error_message_label.pack(fill=X, pady=5)
+
+        self.frame.pack(pady=25)
+
+    def show_error_message(self, error_message: str, error_title: str = 'Error') -> None:
+        logger.error(f"GUI error: {error_message}")
+        if self.error_message_debouncer is not None:
+            self.frame.after_cancel(self.error_message_debouncer)
+        self.error_message_label.config(text=error_message)
+        self.error_message_debouncer = self.frame.after(5000, lambda: self.error_message_label.config(text=''))
+
+    def reset_gui(self) -> None:
+        self.stop_progress_bar()
+        self.username_entry.delete(0, 'end')
+        self.password_entry.delete(0, 'end')
+        self.username_entry.focus_force()
+
+    def start_progress_bar(self) -> None:
+        self.progress_value.set(0)
+        self.progress_bar.pack(fill=X, pady=5)
+
+    def stop_progress_bar(self) -> None:
+        self.progress_value.set(100)
+        self.progress_bar.stop()
+
+    def clear_inputs(self) -> None:
+        self.username_entry.delete(0, 'end')
+        self.password_entry.delete(0, 'end')
+
+    def keyup(self, key_event: Any) -> None:
+        self._is_login_entry_complete()
+        self.timeout_timer_reset()  # keep session alive while user is typing
+        if self.entry_debouncer is not None:
+            self.frame.after_cancel(self.entry_debouncer)
+        self.entry_debouncer = self.frame.after(10 * MS_PER_SECOND, self.clear_inputs)
+
+
+class ButtonsGuiMixin:
+    '''
+    The class shall add the Tkinter buttons to the self.buttons array
+    '''
+    buttons: list[Button] = []
+
+    def deactivate_buttons(self):
+        for b in self.buttons:
+            b['state'] = tkinter.DISABLED
+
+    def activate_buttons(self):
+        for b in self.buttons:
+            b['state'] = tkinter.NORMAL
+
+
+class MemberInformation(GuiTemplate, ButtonsGuiMixin):
+
+    def __init__(self, master: tkinter.Tk, gui_callback: Callable[[GuiEvent], None], member: Member) -> None:
+        super().__init__(master, gui_callback)
+
+        self.add_basic_information(
+            self.frame, member.member_number, member.get_name())
+
+        self.print_header = self.create_label(self.frame, "Print label for:")
+        self.print_header.pack(fill=X, pady=(40, 0))
+
+        self.storage_label_button = self.add_print_button(
+            self.frame,
+            'Temporary storage',
+            lambda: gui_callback(GuiEvent(GuiEvent.DRAW_STORAGE_LABEL_GUI))
+        )
+
+        self.storage_label_button = self.add_print_button(
+            self.frame,
+            'Rotating storage (e.g. laser)',
+            lambda: gui_callback(GuiEvent(GuiEvent.DRAW_ROTATING_LABEL_GUI))
+        )
+
+        self.fire_box_label_button = self.add_print_button(
+            self.frame,
+            'Fire safety cabinet storage',
+            lambda: gui_callback(GuiEvent(GuiEvent.PRINT_LABEL, label_data.FireSafetyLabel.from_member(member, (datetime.now() + timedelta(days=FIRE_BOX_STORAGE_LENGTH)).date())))
+        )
+
+        self.label_3d_printer_button = self.add_print_button(
+            self.frame,
+            '3D-printer marker',
+            lambda: gui_callback(GuiEvent(GuiEvent.PRINT_LABEL, label_data.Printer3DLabel.from_member(member)))
+        )
+
+        self.box_label_button = self.add_print_button(
+            self.frame,
+            'Storage box',
+            lambda: gui_callback(GuiEvent(GuiEvent.PRINT_LABEL, label_data.BoxLabel.from_member(member)))
+        )
+        # Removed due to not being used present
+        '''
+        self.box_label_button = self.add_print_button(
+            self.frame,
+            'Meetup name tag',
+            lambda: gui_callback(GuiEvent(GuiEvent.PRINT_LABEL, label_data.MeetupNameTag.from_member(member)))
+        )
+        '''
+        self.box_label_button = self.add_print_button(
+            self.frame,
+            'Annual meeting name tag',
+            lambda: gui_callback(GuiEvent(GuiEvent.PRINT_LABEL, label_data.NameTag.from_member(member)))
+        )
+
+        self.drying_label_button = self.add_print_button(
+            self.frame,
+            'Drying label',
+            lambda: gui_callback(GuiEvent(GuiEvent.DRAW_DRYING_LABEL_GUI))
+        )
+
+        self.message_label_button = self.add_print_button(
+            self.frame,
+            'Print warning label',
+            lambda: gui_callback(GuiEvent(GuiEvent.PRINT_LABEL, label_data.WarningLabel.from_member(member, None, (datetime.now() + timedelta(days=30)).date())))
+        )
+
+        self.exit_button = self.add_print_button(
+            self.frame,
+            'Log out',
+            lambda: gui_callback(GuiEvent(GuiEvent.LOG_OUT))
+        )
+        self.exit_button.pack(pady=(40, 0))
+
+        self.buttons = [self.storage_label_button, self.fire_box_label_button, self.box_label_button, self.exit_button]
+
+
+class EditDescription(GuiTemplate, ButtonsGuiMixin):
+    def __init__(self, master: tkinter.Tk, gui_callback: Callable[[GuiEvent], None]):
+        super().__init__(master, gui_callback)
+
+        self.instruction = 'Describe what you want to store here...'
+        self.description_label = self.create_label(self.frame, 'Storage label')
+        self.description_label.pack(fill=X, pady=5)
+
+        self.text_box = Text(self.frame, height=5, bg='white', fg='grey', font=self.text_font, takefocus=True)
+
+        self.text_box.insert(END, self.instruction)
+
+        self.text_box.pack()
+
+        self.character_label_string = StringVar()
+        self.character_label_string.set(f'0 / {MAX_DESCRIPTION_LENGTH}')
+
+        self.character_label = Label(self.frame, textvariable=self.character_label_string, anchor='e', bg='white',
+                                     fg='grey', font=self.text_font)
+        self.character_label.pack(fill=X, pady=5)
+
+        self.text_box.bind('<FocusIn>', self.text_box_callback_focusin)
+        self.text_box.pack()
+        self.error_message_debouncer: str | None = None
+
+        self.print_button = self.add_print_button(
+            self.frame,
+            'Print',
+            lambda: gui_callback(GuiEvent(GuiEvent.ENTERED_DESCRIPTION, self.text_box.get('1.0', 'end-1c'))),
+        )
+
+        self.cancel_button = self.add_print_button(
+            self.frame,
+            'Cancel',
+            lambda: gui_callback(GuiEvent(GuiEvent.CANCEL))
+        )
+
+        self.buttons = [self.print_button, self.cancel_button]
+
+        self.error_message_label = self.create_label(self.frame, '')
+        self.error_message_label.config(fg='red')
+        self.error_message_label.pack(fill=X, pady=5)
+
+        self.frame.pack(pady=25)
+
+    def text_box_callback_key(self, event: Any) -> None:
+        text_box_content = self.text_box.get('1.0', END)
+        text_box_length = len(text_box_content) - 1
+        self.timeout_timer_reset()
+
+        if text_box_length >= MAX_DESCRIPTION_LENGTH:
+            self.text_box.delete('1.0', END)
+            self.text_box.insert('1.0', text_box_content[:MAX_DESCRIPTION_LENGTH])
+        else:
+            self.character_label.config(fg='grey')
+
+        self.character_label_update()
+
+    def show_error_message(self, error_message: str, error_title: str = 'Error') -> None:
+        logger.error(f"GUI error: {error_message}")
+        if self.error_message_debouncer is not None:
+            self.frame.after_cancel(self.error_message_debouncer)
+        self.error_message_label.config(text=error_message)
+        self.error_message_debouncer = self.frame.after(5000, lambda: self.error_message_label.config(text=''))
+        return
+
+    def character_label_update(self) -> None:
+        text_box_content = self.text_box.get('1.0', END)
+        text_box_length = len(text_box_content) - 1
+        self.character_label_string.set(f'{text_box_length} / {MAX_DESCRIPTION_LENGTH}')
+
+    def text_box_callback_focusin(self, event: Any) -> None:
+        self.text_box.config(fg='black')
+        self.text_box.delete('1.0', END)
+        self.text_box.bind('<FocusIn>', '')
+        self.text_box.bind('<KeyRelease>', self.text_box_callback_key)
+
+
+class WaitForTokenGui(GuiTemplate):
+
+    def __init__(self, master: tkinter.Tk, gui_callback: Callable[[GuiEvent], None]):
+        super().__init__(master, gui_callback)
+
+        self.scan_tag_label = self.create_label(self.frame, 'Waiting for token...')
+        self.scan_tag_label.pack(fill=X, pady=5)
+
+        self.progress_bar = ttk.Progressbar(self.frame, mode='indeterminate')
+
+        self.error_message_debouncer: str | None = None
+        self.error_message_label = self.create_label(self.frame, '')
+        self.error_message_label.config(fg='red')
+        self.error_message_label.pack(fill=X, pady=5)
+
+        self.frame.pack(pady=25)
+
+    def show_error_message(self, error_message: str, error_title: str = 'Error') -> None:
+        logger.error(f"GUI error: {error_message}")
+        if self.error_message_debouncer is not None:
+            self.frame.after_cancel(self.error_message_debouncer)
+        self.error_message_label.config(text=error_message)
+        self.error_message_debouncer = self.error_message_label.after(
+            5000,
+            lambda: self.error_message_label.config(text='')
+        )
+
+    def reset_gui(self) -> None:
+        self.stop_progress_bar()
+
+    def start_progress_bar(self) -> None:
+        self.progress_bar.start()
+        self.progress_bar.pack(fill=X, pady=5)
+
+    def stop_progress_bar(self) -> None:
+        self.progress_bar.stop()
+        self.progress_bar.pack_forget()
+
+
+class DryingLabel(GuiTemplate, ButtonsGuiMixin):
+    def __init__(self, master: tkinter.Tk, member: Member, gui_callback: Callable[[GuiEvent], None]):
+        super().__init__(master, gui_callback)
+
+        self.drying_label = self.create_label(self.frame, "Estimated drying time (h):")
+        self.drying_label.pack(fill=X, pady=5)
+
+        # TODO Validation seems to be challening, disabled for now.
+        # Documentation https://www.tcl-lang.org/man/tcl8.6/TkCmd/spinbox.htm#M17
+        def spinbox_validation(user_input, user_input_string):
+            if user_input.isdigit() and (int(user_input) in range(ALLOWED_DRYING_FROM, ALLOWED_DRYING_TO + 1)):
+                return True
+
+            return False
+
+        self.drying_estimation_validator = self.frame.register(spinbox_validation)
+
+        self.drying_estimation_spinbox = Spinbox(self.frame,
+                                                 state='readonly',
+                                                 font=self.text_font,
+                                                 readonlybackground='white',
+                                                 from_=ALLOWED_DRYING_FROM,
+                                                 to=ALLOWED_DRYING_TO,
+                                                 increment=ALLOWED_DRYING_INCREMENT,
+                                                 validate='none',
+                                                 validatecommand=(self.drying_estimation_validator, '%P', '%S'))
+        self.drying_estimation_spinbox.pack(fill=X, pady=5)
+
+        self.print_button = self.add_print_button(
+            self.frame,
+            'Print',
+            lambda: gui_callback(GuiEvent(GuiEvent.PRINT_LABEL, label_data.DryingLabel.from_member(member, int(self.drying_estimation_spinbox.get()))))
+        )
+
+        self.cancel_button = self.add_print_button(
+            self.frame,
+            'Cancel',
+            lambda: gui_callback(GuiEvent(GuiEvent.CANCEL))
+        )
+
+        self.buttons = [self.print_button, self.cancel_button]
+
+        self.error_message_debouncer: str | None = None
+        self.error_message_label = self.create_label(self.frame, '')
+        self.error_message_label.config(fg='red')
+        self.error_message_label.pack(fill=X, pady=5)
+
+        self.frame.pack(pady=25)
+
+    def show_error_message(self, error_message: str, error_title: str = 'Error') -> None:
+        logger.error(f"GUI error: {error_message}")
+        if self.error_message_debouncer is not None:
+            self.frame.after_cancel(self.error_message_debouncer)
+        self.error_message_label.config(text=error_message)
+        self.error_message_debouncer = self.frame.after(5000, lambda: self.error_message_label.config(text=''))
+        return
+

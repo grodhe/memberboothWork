@@ -1,0 +1,42 @@
+basic@QL800:~/memberboothNew $ python3 ./memberbooth.py --base-url https://medlem.kalmarmakerspace.se
+deprecation warning: brother_ql.devicedependent is deprecated and will be removed in a future release
+Slack channel ID not specified. Skipping Slack login.
+Exception in Tkinter callback
+Traceback (most recent call last):
+  File "/usr/lib/python3.13/tkinter/__init__.py", line 2071, in __call__
+    return self.func(*args)
+           ~~~~~~~~~^^^^^^^
+  File "/home/basic/memberboothNew/src/gui/design.py", line 200, in login
+    return gui_callback(GuiEvent(GuiEvent.LOGIN, MemberLoginData(self.username_entry.get(), self.password_entry.get())))
+                                                                 ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.13/tkinter/__init__.py", line 3261, in get
+    return self.tk.call(self._w, 'get')
+           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+_tkinter.TclError: invalid command name ".!canvas.!frame.!entry"
+<src.backend.makeradmin.UploadedLabel object at 0xf40e1310>
+Exception in Tkinter callback
+Traceback (most recent call last):
+  File "/usr/lib/python3.13/tkinter/__init__.py", line 2071, in __call__
+    return self.func(*args)
+           ~~~~~~~~~^^^^^^^
+  File "/usr/lib/python3.13/tkinter/__init__.py", line 865, in callit
+    func(*args)
+    ~~~~^^^^^^^
+  File "/home/basic/memberboothNew/src/gui/states.py", line 143, in activate_buttons
+    state.gui.activate_buttons()  # type: ignore
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/basic/memberboothNew/src/gui/design.py", line 270, in activate_buttons
+    b['state'] = tkinter.NORMAL
+    ~^^^^^^^^^
+  File "/usr/lib/python3.13/tkinter/__init__.py", line 1836, in __setitem__
+    self.configure({key: value})
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/tkinter/__init__.py", line 1825, in configure
+    return self._configure('configure', cnf, kw)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/tkinter/__init__.py", line 1815, in _configure
+    self.tk.call(_flatten((self._w, cmd)) + self._options(cnf))
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_tkinter.TclError: invalid command name ".!canvas2.!frame.!button2"
+
+

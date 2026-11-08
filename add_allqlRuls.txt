@@ -1,0 +1,4 @@
+
+File  /etc/udev/rules.d/99-brother-ql.rules
+Should have this line
+SUBSYSTEM=="usb", ATTR{idVendor}=="04f9", MODE="0666"

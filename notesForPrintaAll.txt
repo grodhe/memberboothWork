@@ -1,0 +1,7 @@
+
+För att skriva ut alla medlemmar från en csv fil använd
+allLBprint.py och ha alla medlemmar som ska ha etikett i en 
+csv fil. Se members.csv som exempel.
+#python3   allLBprint.py --csv members.csv  --no-printer
+#python3   allLBprint.py --csv members.cs
+

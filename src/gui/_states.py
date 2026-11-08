@@ -1,0 +1,369 @@
+from copy import deepcopy
+from datetime import datetime, timedelta
+import tkinter
+from time import time
+from typing import Callable
+import config
+
+from src.backend.makeradmin import KalmarApiClient, NetworkError, UploadedLabel
+from src.test.makeradmin_mock import KalmarApiClient as MockedKalmarApiClient
+from src.backend.member import Member
+from src.backend.makeradmin import LoginError
+from src.label import creator as label_creator
+from src.label import printer as label_printer
+from src.label.printer import PrinterNotFoundError
+from src.util.logger import get_logger
+from src.util.slack_client import SlackClient
+from .design import GuiEvent, GuiTemplate, StartGui, MemberInformation, EditDescription, DryingLabel
+from .event import Event, MemberLoginData
+from src.backend import label_data
+
+logger = get_logger()
+
+
+class State(object):
+
+    def __init__(self, application: 'Application', master: tkinter.Tk, member: Member | None = None):
+        logger.info(f'Processing current state: {self}')
+        self.application = application
+        self.master = master
+        self.master.title('memberbooth')
+        self.member = member
+        self.gui: GuiTemplate | None = None
+
+    def change_state(self) -> None:
+        if self.gui:
+            self.gui.timeout_timer_cancel()
+        self.gui = None
+
+    def gui_callback(self, gui_event: GuiEvent) -> None:
+        #if (not config.development and type(self) in [WaitingState] and gui_event.event == GuiEvent.TIMEOUT_TIMER_EXPIRED):
+        if (not config.development and self.__class__.__name__ == "WaitingState" and gui_event.event == GuiEvent.TIMEOUT_TIMER_EXPIRED):
+            return
+        logger.info(gui_event)
+
+    def on_event(self, event: Event) -> 'State | None':
+        logger.info(event)
+        return None
+
+    def gui_print(self, label: label_creator.Label) -> None:
+        event = Event(Event.PRINTING_FAILED)
+        assert self.gui is not None
+        assert self.member is not None
+
+        if config.no_printer:
+            file_name = f'{self.member.member_number}_{str(int(time()))}.png'
+            logger.info(f'Program run with --no-printer, storing image to {file_name}')
+            label.save(file_name)
+            label.show()
+            event = Event(Event.PRINTING_SUCCEEDED)
+            self.application.on_event(event)
+            return
+
+        try:
+            print_status = label_printer.print_label(label.label)
+            logger.info(f'Printer status: {print_status}')
+
+            # 🔥 HARD GUARD — NOTHING passes unless it's a dict
+            if not print_status or not isinstance(print_status, dict):
+                logger.info('Print sent (no status returned)')
+                self.application.slack_client.post_message_info('success!')
+                event = Event(Event.PRINTING_SUCCEEDED)
+
+            else:
+                printer_state = print_status.get('printer_state') or {}
+                errors = printer_state.get('errors') or []
+
+                if not errors:
+                    logger.info('Printed label successfully')
+                    self.application.slack_client.post_message_info('success!')
+                    event = Event(Event.PRINTING_SUCCEEDED)
+                else:
+                    error_string = ', '.join(errors)
+                    self.application.slack_client.post_message_error(
+                        f'printer reported back the following error: {error_string}')
+                    self.gui.show_error_message(
+                        f'Printer reported back the following error: {error_string}',
+                        error_title='Printer error!'
+                    )
+
+        except PrinterNotFoundError:
+            self.gui.show_error_message(
+                'Printer not found. Ensure it is connected and Editor Lite is disabled.',
+                error_title='Printer error!'
+            )
+            self.application.slack_client.post_message_error('printer not found')
+
+        except Exception as e:
+            logger.exception('Unexpected printer error')
+            self.application.slack_client.post_message_error(
+                f'Unexpected printer error: {e}')
+            self.gui.show_error_message(
+                'Unknown printer error occurred!',
+                error_title='Printer error!'
+            )
+
+        next_state = self.application.on_event(event)
+
+        # 🔥 FORCE UI refresh if nothing changed
+        #if next_state is None and self.member:
+        #    self.application.state = MemberIdentified(self.application, self.master, self.member)
+        if next_state is None and self.member:
+            self.master.after(0, lambda: setattr(
+                self.application,
+                "state",
+                MemberIdentified(self.application, self.master, self.member)
+    ))
+
+    def __repr__(self) -> str:
+        return self.__str__()
+
+    def __str__(self) -> str:
+        return self.__class__.__name__
+
+
+def print_label_handler(state: State, event: label_data.LabelType) -> None:
+    state.gui.deactivate_buttons()  # type: ignore
+    state.application.busy()
+
+    try:
+        if state.application.last_printed_label is not None and state.application.last_printed_label.label.approximately_equal(event):
+            uploaded_label = deepcopy(state.application.last_printed_label)
+        else:
+            uploaded_label = state.application.api_client.post_label(event)
+
+        label_image = label_creator.create_label(uploaded_label)
+
+        print(uploaded_label)
+        state.application.slack_client.post_message_info(
+            f'*#{uploaded_label.label.base.member_number} - {uploaded_label.label.base.member_name}* tried to print a {type(uploaded_label.label).__name__} label.')
+
+        state.gui_print(label_image)
+        state.application.last_printed_label = uploaded_label
+
+    finally:
+        state.application.notbusy()
+
+        #def activate_buttons():
+        #   if state.gui:
+        #       state.gui.activate_buttons()  # type: ignore
+
+        def activate_buttons():
+            try:
+                if state.gui and hasattr(state.gui, "buttons"):
+                    for b in state.gui.buttons:
+                        try:
+                            b.config(state=tkinter.NORMAL)
+                        except tkinter.TclError:
+                            pass  # widget already destroyed
+            except Exception:
+                pass
+
+        state.master.after(100, activate_buttons)
+
+
+# --- rest of file unchanged (states, Application etc.) ---
+
+class WaitingState(State):
+    def __init__(self, application: 'Application', master: tkinter.Tk, member: Member | None = None):
+        super().__init__(application, master, member)
+        self.gui: StartGui = StartGui(self.master, self.gui_callback)
+
+    def gui_callback(self, gui_event: GuiEvent) -> None:
+        super().gui_callback(gui_event)
+
+        if gui_event.event == GuiEvent.LOGIN:
+            assert isinstance(gui_event.data, MemberLoginData)
+            login: MemberLoginData = gui_event.data
+            logger.debug(f'Login requested for username = {login.username}')
+            self.application.on_event(Event(Event.LOGIN, login))
+
+    def on_event(self, event):
+        super().on_event(event)
+
+        if event.event == Event.LOGIN:
+            self.gui.start_progress_bar()
+            self.master.update()
+
+            def reset_with_error_message(msg: str):
+                self.gui.reset_gui()
+                self.gui.show_error_message(msg)
+
+            try:
+                login_data: MemberLoginData = event.data
+            except AttributeError:
+                logger.exception("Programming error: Missing 'data' for the event")
+                return reset_with_error_message("Programming error: Missing 'data' for the event")
+
+            try:
+                member = Member.from_login(self.application.api_client, login_data.username, login_data.password)
+                logger.debug(f'Login successful for {member}')
+                return MemberIdentified(self.application, self.master, member)
+            except LoginError as e:
+                return reset_with_error_message(str(e))
+            except NetworkError:
+                return reset_with_error_message('Network error, please try again')
+            except Exception as e:
+                logger.exception('Unexpected exception during login')
+                self.application.slack_client.post_message_error(f'Unexpected exception when logging in: {e}')
+                return reset_with_error_message(f'Error...\n{e}')
+
+
+class EditTemporaryStorageLabel(State):
+    def __init__(self, application: 'Application', master: tkinter.Tk, member: Member, create_label: Callable[[str], label_data.LabelType]):
+        super().__init__(application, master, member)
+        assert self.member is not None
+
+        self.create_label = create_label
+        self.gui: EditDescription = EditDescription(self.master, self.gui_callback)
+
+    def gui_callback(self, gui_event: GuiEvent) -> None:
+        super().gui_callback(gui_event)
+
+        event = gui_event.event
+        data = gui_event.data
+
+        if event == GuiEvent.CANCEL:
+            self.application.on_event(Event(Event.CANCEL))
+        elif event == GuiEvent.TIMEOUT_TIMER_EXPIRED:
+            self.application.on_event(Event(Event.LOG_OUT))
+        elif event == GuiEvent.ENTERED_DESCRIPTION:
+            assert isinstance(data, str)
+            description = data
+            if len(description.replace(r' ', '')) < 5 or description == self.gui.instruction:
+                self.gui.show_error_message('You have to add a description of at least 5 letters',
+                                            error_title='User error!')
+                return
+            label = self.create_label(description)
+            print_label_handler(self, label)
+
+    def on_event(self, event: Event) -> 'State | None':
+        super().on_event(event)
+
+        event_type = event.event
+        if event_type == Event.CANCEL or event_type == Event.PRINTING_SUCCEEDED:
+            assert self.member is not None
+            return MemberIdentified(self.application, self.master, self.member)
+        elif event_type == Event.LOG_OUT:
+            return WaitingState(self.application, self.master, None)
+        return None
+
+
+class EditDryingLabel(State):
+    def __init__(self, application: 'Application', master: tkinter.Tk, member: Member):
+        super().__init__(application, master, member)
+        assert self.member is not None
+        self.gui: DryingLabel = DryingLabel(self.master, self.member, self.gui_callback)
+
+    def gui_callback(self, gui_event: GuiEvent) -> None:
+        super().gui_callback(gui_event)
+
+        event = gui_event.event
+        data = gui_event.data
+
+        if event == GuiEvent.CANCEL:
+            self.application.on_event(Event(Event.CANCEL))
+        elif event == GuiEvent.TIMEOUT_TIMER_EXPIRED:
+            self.application.on_event(Event(Event.LOG_OUT))
+        elif event == GuiEvent.PRINT_LABEL:
+            assert isinstance(data, label_data.DryingLabel)
+            print_label_handler(self, data)
+
+    def on_event(self, event):
+        super().on_event(event)
+
+        event = event.event
+        if event == Event.CANCEL or event == Event.PRINTING_SUCCEEDED:
+            assert self.member is not None
+            return MemberIdentified(self.application, self.master, self.member)
+        elif event == Event.LOG_OUT:
+            return WaitingState(self.application, self.master, None)
+
+
+class MemberIdentified(State):
+    def __init__(self, application: 'Application', master: tkinter.Tk, member: Member):
+        super().__init__(application, master, member)
+        assert self.member is not None
+        self.gui: MemberInformation = MemberInformation(self.master, self.gui_callback, self.member)
+
+    def gui_callback(self, gui_event: GuiEvent) -> None:
+        super().gui_callback(gui_event)
+
+        event = gui_event.event
+
+        if event == GuiEvent.DRAW_STORAGE_LABEL_GUI:
+            self.application.on_event(Event(Event.PRINT_TEMPORARY_STORAGE_LABEL))
+        if event == GuiEvent.DRAW_ROTATING_LABEL_GUI:
+            self.application.on_event(Event(Event.PRINT_ROTATING_STORAGE_LABEL))
+        elif event == GuiEvent.LOG_OUT or event == GuiEvent.TIMEOUT_TIMER_EXPIRED:
+            self.application.on_event(Event(Event.LOG_OUT))
+        elif event == GuiEvent.PRINT_LABEL:
+            label: label_data.LabelType = gui_event.data  # type: ignore
+            print_label_handler(self, label)
+        elif event == GuiEvent.DRAW_DRYING_LABEL_GUI:
+            self.application.on_event(Event(Event.PRINT_DRYING_LABEL))
+
+    def on_event(self, event: Event) -> 'State | None':
+        super().on_event(event)
+        member = self.member
+        assert member is not None
+
+        event_type = event.event
+        if event_type == Event.LOG_OUT:
+            self.application.api_client.logout()
+            return WaitingState(self.application, self.master)
+        elif event_type == Event.PRINT_TEMPORARY_STORAGE_LABEL:
+            return EditTemporaryStorageLabel(self.application, self.master, member, lambda description: label_data.TemporaryStorageLabel.from_member(
+                member,
+                description=description,
+                expires_at=(datetime.now() + timedelta(days=int(label_creator.TEMP_STORAGE_LENGTH))).date()
+            ))
+        elif event_type == Event.PRINT_ROTATING_STORAGE_LABEL:
+            return EditTemporaryStorageLabel(self.application, self.master, member, lambda description: label_data.RotatingStorageLabel.from_member(
+                member,
+                description=description,
+            ))
+        elif event_type == Event.PRINT_DRYING_LABEL:
+            return EditDryingLabel(self.application, self.master, member)
+        return None
+
+
+class Application(object):
+    def __init__(self, api_client: 'KalmarApiClient | MockedKalmarApiClient', slack_client: SlackClient):
+        self.api_client = api_client
+        self.slack_client = slack_client
+
+        tk = tkinter.Tk()
+        tk.attributes('-fullscreen', not config.development)
+        tk.configure(background='white')
+
+        self.master = tk
+        self.state: State = WaitingState(self, self.master)
+        self.last_printed_label: UploadedLabel | None = None
+
+        if config.development:
+            self.master.bind('<Escape>', lambda e: e.widget.quit())
+            self.master.bind('<A>', lambda e: self.on_event(Event(Event.LOGIN, MemberLoginData('test@example.com', 'password'))))
+        self.master.bind('<Alt-q>', lambda e: self.force_stop_application())
+
+    def force_stop_application(self) -> None:
+        logger.warning('User is force-stopping application')
+        self.slack_client.post_message_alert('User is force-stopping the application')
+        self.master.quit()
+
+    def busy(self) -> None:
+        self.master.config(cursor='watch')
+
+    def notbusy(self) -> None:
+        self.master.config(cursor='')
+
+    def on_event(self, event: Event) -> 'State | None':
+        next_state = self.state.on_event(event)
+        if next_state is not None and next_state is not self.state:
+            self.state.change_state()
+            self.state = next_state
+        return None
+
+    def run(self) -> None:
+        self.slack_client.post_message_alert('Application was started!')
+        self.master.mainloop()
