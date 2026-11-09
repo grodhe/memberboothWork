@@ -71,13 +71,13 @@ class KalmarApiClient:
         logger.info(f'Login response: HTTP {r.status_code}')
 
         if r.status_code == 401:
-            raise LoginError('Incorrect username or password')
+            raise LoginError('Wrong email or password')
         if r.status_code == 403:
-            raise LoginError('Email address has not been verified')
+            raise LoginError('Email not verified.\nCheck your inbox.')
         if r.status_code == 400:
-            raise LoginError('Missing username or password')
+            raise LoginError('Enter email and password')
         if not r.ok:
-            raise LoginError(f'Login failed (HTTP {r.status_code})')
+            raise LoginError(f'Login failed ({r.status_code})')
 
         self._update_csrf()
 
@@ -117,4 +117,3 @@ class KalmarApiClient:
             public_observation_url='',
             label=label,
         )
-

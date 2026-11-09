@@ -277,7 +277,12 @@ class StartGui(GuiTemplate):
 
         self.error_message_debouncer: str | None = None
         self.error_message_label = self.create_label(self.frame, '')
-        self.error_message_label.config(fg='red')
+        self.error_message_label.config(
+            fg='red',
+            font=("Arial", 18),   # smaller than body so longer messages fit
+            wraplength=500,        # wrap instead of clipping off-screen
+            justify='left',
+        )
         self.error_message_label.pack(fill=X, pady=5)
 
         self.frame.pack(pady=25)
